@@ -26,8 +26,9 @@ class ObjectDetector:
 
         # initialize parameters
         self.elapsed_time_for_speed_check = 1 # we do a "speed check" every second for an object
-        self.threshold_for_running = 200 # this is how much the lower left point needs to move per second for the motion to be considered running
-        self.base_angular_speed = .005
+        self.threshold_for_running = 50 # this is how much the lower left point needs to move per second for the motion to be considered running
+        self.base_angular_speed = .0005
+        self.base_linear_speed = .1
 
         # initialilze global variables
         self.object_boxes = []
@@ -141,8 +142,8 @@ class ObjectDetector:
     def update_current_image(self, data):
         """ camera callback -- just saves image as most recent image """
         image = np.fromstring(data.data, np.uint8)
-        self.most_recent_image = cv2.resize(image, (1280, 720))
-        # self.most_recent_image = image.reshape(480,640,3)
+        # self.most_recent_image = cv2.resize(image, (1280, 720))
+        self.most_recent_image = image.reshape(480,640,3)
 
 
     def follow_perp(self):
@@ -152,23 +153,22 @@ class ObjectDetector:
         # calculate center of mass of box and follow that
         curr_lower_left_y, curr_lower_left_x, curr_upper_right_y, curr_upper_right_x = self.object_boxes[-1]
         center_of_mass_x = (curr_lower_left_x + curr_upper_right_x) / 2
-        distance_from_center_x = 640 - center_of_mass_x # if the center of mass is greater than 640, it's to the right and the angular speed should be negative
-        self.vel_msg.linear.x = 1
-        self.vel_msg.angular.z = 1#self.base_angular_speed * distance_from_center_x
-        self.publisher.publish(self.vel_msg)
+        distance_from_center_x = 320 - center_of_mass_x # if the center of mass is greater than 640, it's to the right and the angular speed should be negative
+        self.vel_msg.linear.x = self.base_linear_speed
+        self.vel_msg.angular.z = self.base_angular_speed * distance_from_center_x
         print(distance_from_center_x)
 
 
     def run(self):
         """ """
 
-        # rospy.Subscriber('camera/image_raw', Image, self.update_current_image)
+        rospy.Subscriber('camera/image_raw', Image, self.update_current_image)
         
-        # # wait for first image data before starting the general run loop
-        # while self.most_recent_image is None and not rospy.is_shutdown():
-        #     self.rate.sleep()
+        # wait for first image data before starting the general run loop
+        while self.most_recent_image is None and not rospy.is_shutdown():
+            self.rate.sleep()
 
-        video_capture = cv2.VideoCapture(0)
+        # video_capture = cv2.VideoCapture(0)
         start_time = time.time()
 
         while not rospy.is_shutdown():
@@ -180,15 +180,23 @@ class ObjectDetector:
                 start_time = time.time()
 
             # continue with object detection
-            ret, frame = video_capture.read()
-            self.most_recent_image = cv2.resize(frame, (1280, 720))
+            # ret, frame = video_capture.read()
+            # self.most_recent_image = cv2.resize(frame, (1280, 720))
             boxes, scores, classes, num = self.processFrame(self.most_recent_image)
+            box_list_len = len(self.object_boxes)
 
-            # visualization of the results of a detection.
+            # visualization of the results of a detection
             self.add_frame(boxes, classes, scores)
 
             if self.should_follow:
-                self.follow_perp()
+                if len(self.object_boxes) > box_list_len: # checks if there's a frame update
+                    self.follow_perp()
+                    start_time = time.time()
+                elif time.time() - start_time > 3: # the robot will stop moving if it hasn't seen a new frame recently
+                    self.vel_msg.linear.x = 0
+                    self.vel_msg.angular.z = 0
+
+                self.publisher.publish(self.vel_msg)
 
 
 if __name__ == "__main__":
