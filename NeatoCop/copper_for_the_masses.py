@@ -143,6 +143,7 @@ class ObjectDetector:
 					return
 
 		self.object_boxes = []
+		self.trackers_list = []
 
 
 	def minimize_difference(self, boxes):
