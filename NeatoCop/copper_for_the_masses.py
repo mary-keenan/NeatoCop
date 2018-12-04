@@ -35,6 +35,7 @@ class ObjectDetector:
 		self.object_boxes = []
 		self.most_recent_image = None
 		self.should_follow = False
+		self.trackers_list = []
 
 		# (part of the tutorial code)
 		self.detection_graph = tf.Graph()
@@ -84,9 +85,8 @@ class ObjectDetector:
 		return boxes_list, scores[0].tolist(), [int(x) for x in classes[0].tolist()], int(num[0])
 
 
-	def add_frame(self, boxes, classes = None, scores = None, runner_present = False):
+	def update_trackers(self, boxes, classes, scores):
 		""" """
-
 		objects_in_frame = []
 		num_boxes = len(boxes)
 		for i in range(num_boxes):
@@ -94,67 +94,62 @@ class ObjectDetector:
 			if classes is None or classes[i] == 1 and scores[i] > self.threshold_for_detection:
 				box = boxes[i]
 				objects_in_frame.append(box)
-				color = self.pick_box_color(num_boxes, i, runner_present = True)
-				cv2.rectangle(self.most_recent_image,(box[1],box[0]),(box[3],box[2]), color, 2)
 
+		# determine if new trackers need to be initialized and add them if they do
+		if len(objects_in_frame) > len(self.trackers_list): 
+			num_of_new_trackers = len(objects_in_frame) - len(self.trackers_list)
+			for i in range(num_of_new_trackers):
+				new_tracker = DetectedHumanTracker()
+				self.trackers_list.append(new_tracker)
+
+		self.trackers_list = self.minimize_difference(objects_in_frame) # updates trackers list with the boxes from the newest frame
 		self.object_boxes.append(objects_in_frame)
+
+
+	def add_tracker_frames(self):
+		""" """
+		for tracker in self.trackers_list:
+			if tracker.recently_updated:
+				cv2.rectangle(self.most_recent_image, (tracker.most_recent_box[1], tracker.most_recent_box[0]), 
+					(tracker.most_recent_box[3], tracker.most_recent_box[2]), tracker.color, 2)
+
 		cv2.imshow("preview", self.most_recent_image)
 		key = cv2.waitKey(1)
 
-		if runner_present:
-			cv2.imwrite("traffic_camera_shot.png", self.most_recent_image)
 
-
-	def pick_box_color(self, num_boxes, i, runner_present):
+	def take_traffic_camera_snapshot(self, start_box, end_box):
 		""" """
-		colors = {"blue": (255,0,0), "green": (0,255,0), "red": (0,0,255)}
-
-		if runner_present:
-			if i == 0:
-				return colors["red"]
-			elif i == num_boxes - 1:
-				return colors["blue"]
-			else:
-				return colors["green"]
-		else:
-			return colors["blue"]
+		cv2.rectangle(self.most_recent_image, (start_box[1], start_box[0]), (start_box[3], start_box[2]), (255,0,0), 2)
+		cv2.rectangle(self.most_recent_image, (end_box[1], end_box[0]), (end_box[3], end_box[2]), (0,255,0), 2)
+		cv2.imwrite("traffic_camera_shot.png", self.most_recent_image)
 
 
 	def calculate_speed(self):
 		""" """
 		if len(self.object_boxes) >= 2: # we don't proceed unless there's enough data to estimate speed (aka a start and an end position)
 
-			trackers_list = []
-
-			# follow detected people throughout detection period -- keep updating their current position
-			for frame_boxes in self.object_boxes:
-
-				if len(frame_boxes) > len(trackers_list): # determines if new trackers need to be initialized
-					num_of_new_trackers = len(frame_boxes) - len(trackers_list)
-					for i in range(num_of_new_trackers):
-						new_tracker = DetectedHumanTracker()
-						trackers_list.append(new_tracker)
-
-				trackers_list = self.minimize_difference(frame_boxes, trackers_list) # updates trackers list with the boxes from the newest frame
-
 			# at the end of the detection period, determine if there were any runners (compare first and last positions of each tracker's boxes)
-			for tracker in trackers_list:
+			for tracker in self.trackers_list:
 				total_movement = self.measure_distance(tracker.initial_box, tracker.most_recent_box)
 
 				if total_movement > self.threshold_for_running:
 					print '\a'
-					self.add_frame([tracker.initial_box, tracker.most_recent_box], runner_present = True)
-					# self.should_follow = True
-					# print ("the chase is on!")
+					self.take_traffic_camera_snapshot(tracker.initial_box, tracker.most_recent_box)
+					self.should_follow = True
+					print ("the chase is on!")
 					# somehow save which box to follow
 					return
-
 
 		self.object_boxes = []
 
 
-	def minimize_difference(self, boxes, trackers):
+	def minimize_difference(self, boxes):
 		""" """
+		if len(boxes) < len(self.trackers_list):
+			num_of_placeholder_boxes = len(self.trackers_list) - len(boxes)
+			for i in range(num_of_placeholder_boxes):
+				boxes.append(None)
+
 		num_of_boxes = len(boxes)
 		possible_orderings_of_boxes = list(itertools.permutations(boxes))
 		assignment_sum_offset_dict = dict()
@@ -162,21 +157,25 @@ class ObjectDetector:
 		for order in possible_orderings_of_boxes:
 			offset = 0
 			for i in range(num_of_boxes):
-				if trackers[i].initial_box == None:
+				if self.trackers_list[i].initial_box == None or order[i] == None:
 					offset += 10000
 				else:
-					offset += self.measure_distance(order[i], trackers[i].most_recent_box)
+					offset += self.measure_distance(order[i], self.trackers_list[i].most_recent_box)
 
 			assignment_sum_offset_dict[order] = offset
 
 		smallest_offset_order = min(assignment_sum_offset_dict, key = assignment_sum_offset_dict.get)
 
 		for n in range(num_of_boxes):
-			if trackers[n].initial_box == None: # this accounts for "new" trackers
-				trackers[n].initial_box = smallest_offset_order[n]
-			trackers[n].most_recent_box = smallest_offset_order[n]
+			if smallest_offset_order[n] != None:
+				if self.trackers_list[n].initial_box == None: # this accounts for "new" trackers
+					self.trackers_list[n].initial_box = smallest_offset_order[n]
+				self.trackers_list[n].most_recent_box = smallest_offset_order[n]
+				self.trackers_list[n].recently_updated = True
+			else:
+				self.trackers_list[n].recently_updated = False
 
-		return trackers
+		return self.trackers_list
 
 
 	def measure_distance(self, box_1, box_2):
@@ -207,7 +206,6 @@ class ObjectDetector:
 
 	def run(self):
 		""" """
-
 		# rospy.Subscriber('camera/image_raw', Image, self.update_current_image)
 		
 		# # wait for first image data before starting the general run loop
@@ -230,16 +228,17 @@ class ObjectDetector:
 			self.most_recent_image = cv2.resize(frame, (1280, 720))
 			boxes, scores, classes, num = self.process_frame(self.most_recent_image)
 			# box_list_len = len(self.object_boxes)
+			self.update_trackers(boxes, classes, scores)
 
 			# visualization of the results of a detection
-			self.add_frame(boxes, classes, scores)
+			self.add_tracker_frames()
 
 
 class DetectedHumanTracker:
 	def __init__(self, box = None):
 		self.initial_box = box
 		self.most_recent_box = box
-		self.direction = None
+		self.recently_updated = False
 		self.color = list(np.random.choice(range(256), size = 3))
 
 
