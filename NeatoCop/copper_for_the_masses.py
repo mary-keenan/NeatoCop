@@ -36,6 +36,7 @@ class ObjectDetector:
 		self.most_recent_image = None
 		self.should_follow = False
 		self.trackers_list = []
+		self.hot_tracker_index = None
 
 		# (part of the tutorial code)
 		self.detection_graph = tf.Graph()
@@ -129,7 +130,8 @@ class ObjectDetector:
 		if len(self.object_boxes) >= 2: # we don't proceed unless there's enough data to estimate speed (aka a start and an end position)
 
 			# at the end of the detection period, determine if there were any runners (compare first and last positions of each tracker's boxes)
-			for tracker in self.trackers_list:
+			for n in range(len(self.trackers_list)):
+				tracker = self.trackers_list[n]
 				total_movement = self.measure_distance(tracker.initial_box, tracker.most_recent_box)
 
 				if total_movement > self.threshold_for_running:
@@ -137,7 +139,7 @@ class ObjectDetector:
 					self.take_traffic_camera_snapshot(tracker.initial_box, tracker.most_recent_box)
 					self.should_follow = True
 					print ("the chase is on!")
-					# somehow save which box to follow
+					self.hot_tracker_index = n
 					return
 
 		self.object_boxes = []
@@ -196,7 +198,7 @@ class ObjectDetector:
 	def follow_perp(self):
 		""" """
 		# calculate center of mass of box and follow that
-		curr_lower_left_y, curr_lower_left_x, curr_upper_right_y, curr_upper_right_x = self.object_boxes[-1]
+		curr_lower_left_y, curr_lower_left_x, curr_upper_right_y, curr_upper_right_x = self.trackers_list[self.hot_tracker_index].most_recent_box
 		center_of_mass_x = (curr_lower_left_x + curr_upper_right_x) / 2
 		distance_from_center_x = 320 - center_of_mass_x # if the center of mass is greater than 640, it's to the right and the angular speed should be negative
 		self.vel_msg.linear.x = self.base_linear_speed
@@ -227,11 +229,21 @@ class ObjectDetector:
 			ret, frame = video_capture.read()
 			self.most_recent_image = cv2.resize(frame, (1280, 720))
 			boxes, scores, classes, num = self.process_frame(self.most_recent_image)
-			# box_list_len = len(self.object_boxes)
 			self.update_trackers(boxes, classes, scores)
 
 			# visualization of the results of a detection
 			self.add_tracker_frames()
+
+			# follow the perp
+			if self.should_follow:
+				if self.trackers_list[self.hot_tracker_index].recently_updated: # checks if there's a frame update
+					self.follow_perp()
+					start_time = time.time()
+				elif time.time() - start_time > 3: # the robot will stop moving if it hasn't seen a new frame recently
+					self.vel_msg.linear.x = 0
+					self.vel_msg.angular.z = 0
+
+				self.publisher.publish(self.vel_msg)
 
 
 class DetectedHumanTracker:
