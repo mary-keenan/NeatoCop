@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-""" This script turns your Neato into a NeatoCop -- for the masses """
+""" This script turns your Neato into a NeatoCop -- for the masses -- with CAMshifting """
 import rospy
 import numpy as np
 import tensorflow as tf
@@ -27,16 +27,17 @@ class ObjectDetector:
 
 		# initialize parameters
 		self.elapsed_time_for_speed_check = 1 # we do a "speed check" every second for an object
-		self.threshold_for_running = 150 # this is how much the lower left point needs to move per second for the motion to be considered running
+		self.threshold_for_running = 300 # this is how much the lower left point needs to move per second for the motion to be considered running
 		self.base_angular_speed = .0005
 		self.base_linear_speed = .1
-		self.overlap_threshold = 50 # used to determine if meanshifted box overlaps with a detected object
-		# set up the termination criteria, either 10 iteration or move by atleast 1 pt
+		self.overlap_threshold = 100 # used to determine if meanshifted box overlaps with a detected object
+		# set up the termination criteria for CAMshifting, either 10 iteration or move by at least 1 pt
 		self.term_crit = ( cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 1 )
 
 		# initialilze global variables
 		self.object_boxes = []
 		self.most_recent_image = None
+		self.frozen_most_recent_image = None
 		self.should_follow = False
 		self.trackers_list = []
 		self.hot_tracker_index = None
@@ -103,51 +104,70 @@ class ObjectDetector:
 
 		# try to find object for each tracker -- if there are any leftover, init new tracker
 		hsv = cv2.cvtColor(self.most_recent_image, cv2.COLOR_BGR2HSV)
-		for tracker in self.trackers_list:
-			dst = cv2.calcBackProject([hsv], [0], tracker.roi_hist, [0,180], 1)
-			# apply meanshift to get the new location
-			ret, tracker.most_recent_box = cv2.meanShift(dst, tracker.most_recent_box, self.term_crit)
-			objects_in_frame = self.remove_box_overlap(objects_in_frame, tracker.most_recent_box)
+		for n in range(len(self.trackers_list)):
+			dst = cv2.calcBackProject([hsv], [0], self.trackers_list[n].roi_hist, [0,180], 1)
+			# apply CAMshift to get the new location
+			ret, self.trackers_list[n].most_recent_box = cv2.CamShift(dst, self.trackers_list[n].most_recent_box, self.term_crit)
 
-			# Draw it on image
-			# x,y,w,h = tracker.most_recent_box
-			# cv2.rectangle(self.most_recent_image, (x,y), (x+w,y+h), tracker.color ,2)
-			# cv2.imshow('img2',self.most_recent_image)
-			# k = cv2.waitKey(60) & 0xff
+		# determine if new trackers need to be initialized and add them if they do
+		if len(objects_in_frame) > len(self.trackers_list): 
+			num_of_new_trackers = len(objects_in_frame) - len(self.trackers_list)
+			for i in range(num_of_new_trackers):
+				new_tracker = DetectedHumanTracker()
+				self.trackers_list.append(new_tracker)
 
-		# initialize new trackers
-		for box in objects_in_frame:
-			box_roi_hist = self.find_roi_histogram(box, self.most_recent_image)
-			new_tracker = DetectedHumanTracker(box, box_roi_hist)
-			self.trackers_list.append(new_tracker)
+		self.trackers_list = self.minimize_difference(objects_in_frame) # updates trackers list with the boxes from the newest frame
 
 
-	def remove_box_overlap(self, boxes_list, tracker_box):
-		""" uses COM to throw out any boxes the tracker covers """
-		boxes_to_return = []
-		tracker_COM = self.find_COM(tracker_box)
+	def minimize_difference(self, boxes):
+		""" """
+		if len(boxes) < len(self.trackers_list):
+			num_of_placeholder_boxes = len(self.trackers_list) - len(boxes)
+			for i in range(num_of_placeholder_boxes):
+				boxes.append(None)
 
-		for box in boxes_list:
-			box_COM = self.find_COM(box)
-			if self.measure_distance(tracker_COM, box_COM) < self.overlap_threshold:
-				boxes_to_return.append(box)
+		num_of_boxes = len(boxes)
+		possible_orderings_of_boxes = list(itertools.permutations(boxes))
+		assignment_sum_offset_dict = dict()
 
-		return boxes_to_return
+		for order in possible_orderings_of_boxes:
+			offset = 0
+			for i in range(num_of_boxes):
+				if self.trackers_list[i].initial_box == None or order[i] == None:
+					offset += 10000
+				else:
+					offset += self.measure_distance(order[i], self.trackers_list[i].most_recent_box)
+
+			assignment_sum_offset_dict[order] = offset
+
+		smallest_offset_order = min(assignment_sum_offset_dict, key = assignment_sum_offset_dict.get)
+
+		for n in range(num_of_boxes):
+			if smallest_offset_order[n] != None:
+				if self.trackers_list[n].initial_box == None: # this accounts for "new" trackers
+					self.trackers_list[n].initial_box = smallest_offset_order[n]
+					self.trackers_list[n].roi_hist = self.find_roi_histogram(smallest_offset_order[n], self.most_recent_image)
+				self.trackers_list[n].most_recent_box = smallest_offset_order[n]
+				self.trackers_list[n].recently_updated = True
+			else:
+				self.trackers_list[n].recently_updated = False
+
+		return self.trackers_list
 
 
 	def find_COM(self, box):
 		""" """
 		lower_left_y, lower_left_x, upper_right_y, upper_right_x = box
-		return (upper_right_x - lower_left_x, upper_right_y - lower_left_y)
+		return ((upper_right_x + lower_left_x) / 2, (upper_right_y + lower_left_y) / 2)
 
 
 	def find_roi_histogram(self, box, frame):
 		""" """
 		# set up the ROI for tracking
-		r,h,c,w = box
-		roi = frame[r:r+h, c:c+w]
+		lx,ly,tx,ty = box
+		roi = frame[lx:tx,ly:ty]
 		hsv_roi =  cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-		mask = cv2.inRange(hsv_roi, np.array((0., 60.,32.)), np.array((180.,255.,255.)))
+		mask = cv2.inRange(hsv_roi, np.array((0., 60., 32.)), np.array((180., 255., 255.)))
 		roi_hist = cv2.calcHist([hsv_roi],[0],mask,[180],[0,180])
 		cv2.normalize(roi_hist,roi_hist,0,255,cv2.NORM_MINMAX)
 		return roi_hist
@@ -156,8 +176,8 @@ class ObjectDetector:
 	def add_tracker_frames(self):
 		""" """
 		for tracker in self.trackers_list:
-			x,y,w,h = tracker.most_recent_box
-			cv2.rectangle(self.most_recent_image, (x,y), (x + w, y + h), tracker.color, 2)
+			cv2.rectangle(self.most_recent_image, (tracker.most_recent_box[1], tracker.most_recent_box[0]), 
+				(tracker.most_recent_box[3], tracker.most_recent_box[2]), tracker.color, 2)
 
 		cv2.imshow("preview", self.most_recent_image)
 		key = cv2.waitKey(1)
@@ -252,13 +272,25 @@ class ObjectDetector:
 			# visualization of the results of a detection
 			self.add_tracker_frames()
 
+			# follow the perp
+			if self.should_follow:
+				if self.trackers_list[self.hot_tracker_index].recently_updated: # checks if there's a frame update
+					self.follow_perp()
+					start_time = time.time()
+				elif time.time() - start_time > 3: # the robot will stop moving if it hasn't seen a new frame recently
+					self.vel_msg.linear.x = 0
+					self.vel_msg.angular.z = 0
+
+				self.publisher.publish(self.vel_msg)
+
 
 class DetectedHumanTracker:
-	def __init__(self, box, roi_hist):
+	def __init__(self, box = None, roi_hist = None):
 		self.initial_box = box
 		self.most_recent_box = box
 		self.color = list(np.random.choice(range(256), size = 3))
 		self.roi_hist = roi_hist
+		self.recently_updated = False
 
 
 if __name__ == "__main__":
