@@ -31,6 +31,7 @@ class NeatoCop:
 		self.threshold_for_running = 200 # this is how much the lower left point needs to move per second for the motion to be considered running
 		self.base_angular_speed = .002
 		self.base_linear_speed = .2
+		self.max_time_since_last_update = 3 # if the Neato has not seen the person it's following in 3 seconds, it stops
 
 		# initialilze global variables
 		self.object_boxes = [] # we use this to see if we have detected an object two or more times in a second 
@@ -256,7 +257,7 @@ class NeatoCop:
 				if self.trackers_list[self.hot_tracker_index].recently_updated: # checks if there's a frame update
 					self.follow_perp()
 					start_time = time.time()
-				elif time.time() - start_time > 3: # the robot will stop moving if it hasn't seen a new frame recently
+				elif time.time() - start_time > self.max_time_since_last_update: # the robot will stop moving if it hasn't seen a new frame recently
 					self.vel_msg.linear.x = 0
 					self.vel_msg.angular.z = 0
 
