@@ -26,9 +26,11 @@ class ObjectDetector:
 
 		# initialize parameters
 		self.elapsed_time_for_speed_check = 1 # we do a "speed check" every second for an object
-		self.threshold_for_running = 50 # this is how much the lower left point needs to move per second for the motion to be considered running
+		self.threshold_for_running = 7 # ft/s equivalent of jogging speed of 5mph 
 		self.base_angular_speed = .0005
 		self.base_linear_speed = .1
+		self.sensor_height = .8 # ft (for laptop)
+		self.focal_length = 1.635 # ft for 498.41 mm for Neato
 
 		# initialilze global variables
 		self.object_boxes = []
@@ -122,21 +124,29 @@ class ObjectDetector:
 		if len(self.object_boxes) >= 2:
 			s_lower_left_y, s_lower_left_x, s_upper_right_y, s_upper_right_x = self.object_boxes[0]
 			e_lower_left_y, e_lower_left_x, e_upper_right_y, e_upper_right_x = self.object_boxes[-1]
-			
+		
 			# if we assume the person is crossing perfectly perpendicular (and not getting closer or farther away),
-			# we only to look at how one of the coordinates changed
-			difference_in_position = math.sqrt((e_lower_left_x - s_lower_left_x)**2 + (e_lower_left_y - s_lower_left_y)**2)
+			# we only need to measure their depth once and then use the pythagorean theorem
+			proportion_of_screen = float(s_lower_left_y) / 720
+			distance_from_neato = self.focal_length * proportion_of_screen / self.sensor_height
+			height_of_person_ft = (s_upper_right_y - s_lower_left_y) * distance_from_neato / self.focal_length
+			
+			ft_per_pixel_for_person = height_of_person_ft / (s_upper_right_y - s_lower_left_y)
+			difference_in_position_pixel = math.sqrt((e_lower_left_x - s_lower_left_x)**2 + (e_lower_left_y - s_lower_left_y)**2)
+			print ("lower: ", s_lower_left_y, "higher:", s_upper_right_y, "proportion:", proportion_of_screen, "dist:", distance_from_neato, "height ft:", height_of_person_ft, "ft per pixel:", ft_per_pixel_for_person, "diff_pix:", difference_in_position_pixel)
+
+			difference_in_position_ft = ft_per_pixel_for_person * difference_in_position_pixel
 			
 			# if the person moved enough to be considered "running", the computer beeps
-			if difference_in_position > self.threshold_for_running:
-				print '\a'
+			if difference_in_position_ft > self.threshold_for_running:
+				print ('\a')
 				self.add_frame(self.object_boxes, runner_present = True)
 				self.should_follow = True
 				print ("the chase is on!")
 			else:
 				self.object_boxes = []
 
-			print (difference_in_position)
+			print (difference_in_position_ft)
 
 
 	def update_current_image(self, data):
@@ -162,13 +172,13 @@ class ObjectDetector:
 	def run(self):
 		""" """
 
-		rospy.Subscriber('camera/image_raw', Image, self.update_current_image)
+		# rospy.Subscriber('camera/image_raw', Image, self.update_current_image)
 		
-		# wait for first image data before starting the general run loop
-		while self.most_recent_image is None and not rospy.is_shutdown():
-			self.rate.sleep()
+		# # wait for first image data before starting the general run loop
+		# while self.most_recent_image is None and not rospy.is_shutdown():
+		# 	self.rate.sleep()
 
-		# video_capture = cv2.VideoCapture(0)
+		video_capture = cv2.VideoCapture(0)
 		start_time = time.time()
 
 		while not rospy.is_shutdown():
@@ -180,8 +190,8 @@ class ObjectDetector:
 				start_time = time.time()
 
 			# continue with object detection
-			# ret, frame = video_capture.read()
-			# self.most_recent_image = cv2.resize(frame, (1280, 720))
+			ret, frame = video_capture.read()
+			self.most_recent_image = cv2.resize(frame, (1280, 720))
 			boxes, scores, classes, num = self.process_frame(self.most_recent_image)
 			box_list_len = len(self.object_boxes)
 

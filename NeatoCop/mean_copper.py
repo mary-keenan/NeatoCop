@@ -27,10 +27,11 @@ class ObjectDetector:
 
 		# initialize parameters
 		self.elapsed_time_for_speed_check = 1 # we do a "speed check" every second for an object
-		self.threshold_for_running = 300 # this is how much the lower left point needs to move per second for the motion to be considered running
-		self.base_angular_speed = .0005
-		self.base_linear_speed = .1
+		self.threshold_for_running = 200 # f/s
+		self.base_angular_speed = .002
+		self.base_linear_speed = .2
 		self.overlap_threshold = 100 # used to determine if meanshifted box overlaps with a detected object
+		self.width_of_person_in_feet = 1 # in feet
 		# set up the termination criteria for CAMshifting, either 10 iteration or move by at least 1 pt
 		self.term_crit = ( cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 1 )
 
@@ -185,10 +186,8 @@ class ObjectDetector:
 
 	def take_traffic_camera_snapshot(self, start_box, end_box):
 		""" """
-		x,y,w,h = start_box
-		cv2.rectangle(self.most_recent_image, (x,y), (x + w, y + h), (255,0,0), 2)
-		x,y,w,h = end_box
-		cv2.rectangle(self.most_recent_image, (x,y), (x + w, y + h), (0,255,0), 2)
+		cv2.rectangle(self.most_recent_image, (start_box[1], start_box[0]), (start_box[3], start_box[2]), (255,0,0), 2)
+		cv2.rectangle(self.most_recent_image, (end_box[1], end_box[0]), (end_box[3], end_box[2]), (0,255,0), 2)
 		cv2.imwrite("traffic_camera_shot.png", self.most_recent_image)
 
 
@@ -200,9 +199,10 @@ class ObjectDetector:
 			for n in range(len(self.trackers_list)):
 				tracker = self.trackers_list[n]
 				total_movement = self.measure_distance(tracker.initial_box, tracker.most_recent_box)
+				print (total_movement)
 
 				if total_movement > self.threshold_for_running:
-					print '\a'
+					print ('\a')
 					self.take_traffic_camera_snapshot(tracker.initial_box, tracker.most_recent_box)
 					self.should_follow = True
 					print ("the chase is on!")
@@ -215,13 +215,8 @@ class ObjectDetector:
 
 	def measure_distance(self, box_1, box_2):
 		""" """
-		if len(box_1) > 2:
-			s_lower_left_y, s_lower_left_x, s_upper_right_y, s_upper_right_x = box_1
-			e_lower_left_y, e_lower_left_x, e_upper_right_y, e_upper_right_x = box_2
-		else: 
-			s_lower_left_y, s_lower_left_x = box_1
-			e_lower_left_y, e_lower_left_x = box_2
-
+		s_lower_left_y, s_lower_left_x, s_upper_right_y, s_upper_right_x = box_1
+		e_lower_left_y, e_lower_left_x, e_upper_right_y, e_upper_right_x = box_2
 		# we just track the lower left corner since the COM might confuse two people on top of each other (one is closer than the other)
 		difference_in_position = math.sqrt((e_lower_left_x - s_lower_left_x)**2 + (e_lower_left_y - s_lower_left_y)**2)
 		return (difference_in_position)
@@ -246,13 +241,13 @@ class ObjectDetector:
 
 	def run(self):
 		""" """
-		# rospy.Subscriber('camera/image_raw', Image, self.update_current_image)
+		rospy.Subscriber('camera/image_raw', Image, self.update_current_image)
 		
-		# # wait for first image data before starting the general run loop
-		# while self.most_recent_image is None and not rospy.is_shutdown():
-		# 	self.rate.sleep()
+		# wait for first image data before starting the general run loop
+		while self.most_recent_image is None and not rospy.is_shutdown():
+			self.rate.sleep()
 
-		video_capture = cv2.VideoCapture(0)
+		# video_capture = cv2.VideoCapture(0)
 		start_time = time.time()
 
 		while not rospy.is_shutdown():
@@ -264,8 +259,8 @@ class ObjectDetector:
 				start_time = time.time()
 
 			# continue with object detection
-			ret, frame = video_capture.read()
-			self.most_recent_image = cv2.resize(frame, (1280, 720))
+			# ret, frame = video_capture.read()
+			# self.most_recent_image = cv2.resize(frame, (1280, 720))
 			boxes, scores, classes, num = self.detect_objects(self.most_recent_image)
 			self.update_trackers(boxes, classes, scores)
 
